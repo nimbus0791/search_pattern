@@ -1,0 +1,7 @@
+streamlit
+pandas
+numpy
+matplotlib
+mplfinance
+upstox-python-sdk
+dtaidistance

@@ -355,6 +355,38 @@ def generate_predicted_candles_df_grouped(base_df, pattern, step_percent=0.0005,
     return pd.concat([base_df, predicted_df], ignore_index=True)
 
 
+def analyze_market_sentiment(top_matches):
+    up_count = 0
+    down_count = 0
+    n_seq = 5
+
+    for i in range(len(top_matches)):
+        match_date, sim, fut_sequence, hist_df = top_matches[i]
+        print('curr_n_candles', curr_n_candles)
+        remaining_df = hist_df.iloc[24 + curr_n_candles:].reset_index(drop=True)
+        remaining_feat = extract_candle_features(remaining_df)
+        fut_sequence += remaining_feat
+        cleaned = filter_noise(fut_sequence, min_len=2)
+        
+        u_cnt = 0
+        d_cnt = 0
+        for j in range(min(n_seq, len(cleaned))):
+            if cleaned[j] == 'u': u_cnt += 1
+            else: d_cnt += 1
+        
+        if u_cnt > d_cnt: up_count += 1
+        else: down_count += 1
+    
+    total = up_count + down_count
+    p_up = up_count / total
+    p_down = down_count / total
+
+    if p_up > p_down:
+        return "Up", 100 * p_up
+    else:
+        return "Down", 100 * p_down
+
+        
 def plot_candle_chart(df, title):
     df = df.copy()
     df['time'] = pd.to_datetime(df['time'], utc=True).dt.tz_convert(None)
@@ -380,10 +412,11 @@ st.title("Top-K Pattern Matching Grid")
 history_df = load_data(DB_PATH)
 
 test_date = st.date_input("Select test date", datetime.now().date())
-top_k = st.slider("Number of top matches to show", 4, 32, 20, step=4)
+top_k = st.slider("Number of top matches to show", 4, 32, 20, step=1)
 
-prev_n_candles = st.number_input("Number of previous day candles to match", min_value=1, max_value=25, value=DEFAULT_PREV_N_CANDLES, step=1)
-curr_candle_input = st.number_input("Number of current day candles to match", min_value=1, max_value=25, value=DEFAULT_CURR_N_CANDLES, step=1)
+
+prev_n_candles = st.slider("Number of previous day candles to match", min_value=1, max_value=25, value=DEFAULT_PREV_N_CANDLES, step=1)
+curr_candle_input = st.slider("Number of current day candles to match", min_value=1, max_value=25, value=DEFAULT_CURR_N_CANDLES, step=1)
 
 
 if st.button("Fetch & Analyze"):
@@ -394,9 +427,10 @@ if st.button("Fetch & Analyze"):
         st.error("Failed to fetch test day data / No data available.")
     else:
         curr_n_candles = min(curr_candle_input, len(curr_day_df))
-        with st.spinner("Calculating featues and matching..."):
+        with st.spinner("Calculating features and matching..."):
             top_matches = match_pattern(history_df, prev_day_df, curr_day_df, test_date.strftime("%Y-%m-%d"), top_k, prev_n_candles, curr_n_candles)
-        match_dates = [d for d, _, _, _ in top_matches]
+
+        sentiment, prob = analyze_market_sentiment(top_matches)
 
         curr_day_df_c = curr_day_df.copy()
         curr_day_df = curr_day_df.iloc[:curr_n_candles]
@@ -404,11 +438,9 @@ if st.button("Fetch & Analyze"):
         st.subheader(f"Test Day Candles: {test_date.strftime('%Y-%m-%d')}")
         combined_test_df = pd.concat([prev_day_df, curr_day_df]).sort_values(by='time')
         combined_test_df_c = pd.concat([prev_day_df, curr_day_df_c]).sort_values(by='time')
-        st.pyplot(plot_candle_chart(combined_test_df, f"Test Day: {test_date.strftime('%Y-%m-%d')}"))
+        st.pyplot(plot_candle_chart(combined_test_df, f"Test Day: {test_date.strftime('%Y-%m-%d')} | {sentiment}: {prob:.1f}%"))
 
-        st.subheader(f"Top {top_k} Matches (Showing 4 charts per row)")
-        up_count = 0
-        down_count = 0
+        st.subheader(f"Top {top_k} Matches (Predicted | Test | Match)")
 
         for i in range(len(top_matches)):
             match_date, sim, fut_sequence, hist_df = top_matches[i]
@@ -422,7 +454,6 @@ if st.button("Fetch & Analyze"):
             print(fut_sequence, cleaned)
             
             title = f"{match_date} | sim: {sim:.2f}"
-
 
             cols = st.columns(3)
             with cols[0]:

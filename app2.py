@@ -181,6 +181,7 @@ def lcs_similarity(seq1, seq2):
     precision = dp[m][n] / m
     recall = dp[m][n] / n
     similarity = 2 * (precision * recall) / (precision + recall + 1e-8)
+    similarity = dp[m][n] / max(m, n)
     
     # Backtrack to find match end index in seq2
     i, j = m, n
@@ -466,4 +467,5 @@ if st.button("Fetch & Analyze"):
             with cols[2]:
                 match_fig = plot_candle_chart(hist_df, title)
                 st.pyplot(match_fig)
+
                         

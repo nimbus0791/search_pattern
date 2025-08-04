@@ -399,6 +399,16 @@ def plot_candle_chart(df, title):
     plt.tight_layout()
     return fig
 
+# ----------------- caching ------------#
+
+@st.cache_data
+def get_cached_top_matches(history_df, prev_df, curr_df, test_date_str, top_k, prev_n_candles, curr_n_candles):
+    return match_pattern(history_df, prev_df, curr_df, test_date_str, top_k, prev_n_candles, curr_n_candles)
+
+@st.cache_data
+def get_cached_sentiment(top_matches):
+    return analyze_market_sentiment(top_matches)
+
 @st.cache_data
 def load_data(path):
     df = pd.read_csv(path)
@@ -428,18 +438,21 @@ if st.button("Fetch & Analyze"):
         st.error("Failed to fetch test day data / No data available.")
     else:
         curr_n_candles = min(curr_candle_input, len(curr_day_df))
-        with st.spinner("Calculating features and matching..."):
-            top_matches = match_pattern(history_df, prev_day_df, curr_day_df, test_date.strftime("%Y-%m-%d"), top_k, prev_n_candles, curr_n_candles)
+        test_date_str = test_date.strftime("%Y-%m-%d")
 
-        sentiment, prob = analyze_market_sentiment(top_matches)
+        with st.spinner("Calculating features and matching..."):
+            top_matches = get_cached_top_matches(history_df, prev_day_df, curr_day_df, test_date_str, top_k, prev_n_candles, curr_n_candles)
+
+        sentiment, prob = get_cached_sentiment(top_matches)
 
         curr_day_df_c = curr_day_df.copy()
         curr_day_df = curr_day_df.iloc[:curr_n_candles]
 
-        st.subheader(f"Test Day Candles: {test_date.strftime('%Y-%m-%d')}")
+        st.subheader(f"Test Day Candles: {test_date_str}")
         combined_test_df = pd.concat([prev_day_df, curr_day_df]).sort_values(by='time')
         combined_test_df_c = pd.concat([prev_day_df, curr_day_df_c]).sort_values(by='time')
-        st.pyplot(plot_candle_chart(combined_test_df, f"Test Day: {test_date.strftime('%Y-%m-%d')} | {sentiment}: {prob:.1f}%"))
+
+        st.pyplot(plot_candle_chart(combined_test_df, f"Test Day: {test_date_str} | {sentiment}: {prob:.1f}%"))
 
         st.subheader(f"Top {top_k} Matches (Predicted | Test | Match)")
 
@@ -448,24 +461,16 @@ if st.button("Fetch & Analyze"):
             st.markdown(f"---\n### {i+1}. Match Date: `{match_date}` — Similarity: `{sim:.2f}`")
 
             remaining_df = hist_df.iloc[24 + curr_n_candles:].reset_index(drop=True)
-            
             remaining_feat = extract_candle_features(remaining_df)
             fut_sequence += remaining_feat
             cleaned = filter_noise(fut_sequence, min_len=3)
-            print(fut_sequence, cleaned)
-            
-            title = f"{match_date} | sim: {sim:.2f}"
 
+            title = f"{match_date} | sim: {sim:.2f}"
             cols = st.columns(3)
             with cols[0]:
                 combined_test_df_with_pred = generate_predicted_candles_df_grouped(combined_test_df, cleaned)
-                test_fig = plot_candle_chart(combined_test_df_with_pred, f"Test Day: {test_date.strftime('%Y-%m-%d')}")
-                st.pyplot(test_fig)
+                st.pyplot(plot_candle_chart(combined_test_df_with_pred, f"Test Day: {test_date_str}"))
             with cols[1]:
-                test_fig = plot_candle_chart(combined_test_df_c, f"Test Day: {test_date.strftime('%Y-%m-%d')}")
-                st.pyplot(test_fig)
+                st.pyplot(plot_candle_chart(combined_test_df_c, f"Test Day: {test_date_str}"))
             with cols[2]:
-                match_fig = plot_candle_chart(hist_df, title)
-                st.pyplot(match_fig)
-
-                        
+                st.pyplot(plot_candle_chart(hist_df, title))

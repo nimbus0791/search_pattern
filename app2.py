@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from dtaidistance import dtw
 import matplotlib.pyplot as plt
 import mplfinance as mpf
 from numpy.linalg import norm
@@ -129,8 +130,10 @@ def extract_candle_features(df, min_quantum=0.001):
                 # Continue uptrend
                 end_idx = i
             else:
-                # Direction changed to down
-                pct = (df.loc[end_idx, 'high'] - df.loc[start_idx, 'low']) / df.loc[start_idx, 'low']
+                # Direction changed to down - find highest high and lowest low between start and end
+                highest_high = df.loc[start_idx:end_idx, 'high'].max()
+                lowest_low = df.loc[start_idx:end_idx, 'low'].min()
+                pct = (highest_high - lowest_low) / lowest_low
                 swings.append(pct)
 
                 direction = 'down'
@@ -141,8 +144,10 @@ def extract_candle_features(df, min_quantum=0.001):
                 # Continue downtrend
                 end_idx = i
             else:
-                # Direction changed to up
-                pct = (df.loc[start_idx, 'high'] - df.loc[end_idx, 'low']) / df.loc[start_idx, 'high']
+                # Direction changed to up - find highest high and lowest low between start and end
+                highest_high = df.loc[start_idx:end_idx, 'high'].max()
+                lowest_low = df.loc[start_idx:end_idx, 'low'].min()
+                pct = (highest_high - lowest_low) / highest_high
                 swings.append(-pct)
 
                 direction = 'up'
@@ -152,10 +157,14 @@ def extract_candle_features(df, min_quantum=0.001):
     # Final swing (optional)
     if start_idx != end_idx:
         if direction == 'up':
-            pct = (df.loc[end_idx, 'high'] - df.loc[start_idx, 'low']) / df.loc[start_idx, 'low']
+            highest_high = df.loc[start_idx:end_idx, 'high'].max()
+            lowest_low = df.loc[start_idx:end_idx, 'low'].min()
+            pct = (highest_high - lowest_low) / lowest_low
             swings.append(pct)
         else:
-            pct = (df.loc[start_idx, 'high'] - df.loc[end_idx, 'low']) / df.loc[start_idx, 'high']
+            highest_high = df.loc[start_idx:end_idx, 'high'].max()
+            lowest_low = df.loc[start_idx:end_idx, 'low'].min()
+            pct = (highest_high - lowest_low) / highest_high
             swings.append(-pct)
 
     # Encode swing pattern
@@ -200,7 +209,14 @@ def lcs_similarity(seq1, seq2):
     return similarity, seq1[last_match_index:]
 
 
-def match_pattern(df, prev_test, curr_test, test_date_str, top_k, prev_n_candles, curr_n_candles):
+def dtw_matching(test_df, hist_df):
+    from scipy.stats import zscore
+    test_pattern = zscore(test_df['close'].values)
+    hist_pattern = zscore(hist_df['close'].values)
+    distance = dtw.distance(test_pattern, hist_pattern)
+    return (1/(1+distance), "")  # Convert distance to similarity score (0-1)
+
+def match_pattern(df, prev_test, curr_test, test_date_str, top_k, prev_n_candles, curr_n_candles, method="LCS"):
     df2 = df.copy()
     df2['time'] = pd.to_datetime(df2['time'], utc=True).dt.tz_convert(None)
     df2 = df2.sort_values('time')
@@ -211,7 +227,6 @@ def match_pattern(df, prev_test, curr_test, test_date_str, top_k, prev_n_candles
     test_date = datetime.strptime(test_date_str, "%Y-%m-%d").date()
 
     test_df = pd.concat([prev_test.iloc[-prev_n_candles:], curr_test.iloc[:curr_n_candles]], ignore_index=True)
-    test_feats = extract_candle_features(test_df)
     
     matches = []
     for i in range(1, len(dates)):
@@ -224,9 +239,14 @@ def match_pattern(df, prev_test, curr_test, test_date_str, top_k, prev_n_candles
         
         hist_df_c = pd.concat([prev, curr], ignore_index=True)
         hist_df = pd.concat([prev.iloc[-prev_n_candles:], curr.iloc[:curr_n_candles]], ignore_index=True)
-        hist_feats = extract_candle_features(hist_df)
         
-        sim, fut_sequence = lcs_similarity(hist_feats, test_feats)
+        if method == "LCS":
+            test_feats = extract_candle_features(test_df)
+            hist_feats = extract_candle_features(hist_df)
+            sim, fut_sequence = lcs_similarity(hist_feats, test_feats)
+        else:  # DTW
+            sim, fut_sequence = dtw_matching(test_df, hist_df)
+            
         matches.append((d, sim, fut_sequence, hist_df_c))
     return sorted(matches, key=lambda x: -x[1])[:top_k]
 
@@ -402,8 +422,8 @@ def plot_candle_chart(df, title):
 # ----------------- caching ------------#
 
 @st.cache_data
-def get_cached_top_matches(history_df, prev_df, curr_df, test_date_str, top_k, prev_n_candles, curr_n_candles):
-    return match_pattern(history_df, prev_df, curr_df, test_date_str, top_k, prev_n_candles, curr_n_candles)
+def get_cached_top_matches(history_df, prev_df, curr_df, test_date_str, top_k, prev_n_candles, curr_n_candles, method="LCS"):
+    return match_pattern(history_df, prev_df, curr_df, test_date_str, top_k, prev_n_candles, curr_n_candles, method)
 
 @st.cache_data
 def get_cached_sentiment(top_matches):
@@ -422,6 +442,7 @@ st.title("Top-K Pattern Matching Grid")
 
 history_df = load_data(DB_PATH)
 
+
 test_date = st.date_input("Select test date", datetime.now().date())
 top_k = st.slider("Number of top matches to show", 4, 32, 20, step=1)
 
@@ -429,6 +450,10 @@ top_k = st.slider("Number of top matches to show", 4, 32, 20, step=1)
 prev_n_candles = st.slider("Number of previous day candles to match", min_value=1, max_value=25, value=DEFAULT_PREV_N_CANDLES, step=1)
 curr_candle_input = st.slider("Number of current day candles to match", min_value=1, max_value=25, value=DEFAULT_CURR_N_CANDLES, step=1)
 
+# Matching method selection
+matching_method = st.selectbox("Matching Method:", 
+                             ["DTW", "COSINE"],
+                             index=0)
 
 if st.button("Fetch & Analyze"):
     with st.spinner("Fetching test data from Web..."):
@@ -441,7 +466,8 @@ if st.button("Fetch & Analyze"):
         test_date_str = test_date.strftime("%Y-%m-%d")
 
         with st.spinner("Calculating features and matching..."):
-            top_matches = get_cached_top_matches(history_df, prev_day_df, curr_day_df, test_date_str, top_k, prev_n_candles, curr_n_candles)
+            method = matching_method  # Will be either "DTW" or "COSINE"
+            top_matches = get_cached_top_matches(history_df, prev_day_df, curr_day_df, test_date_str, top_k, prev_n_candles, curr_n_candles, method)
 
         sentiment, prob = get_cached_sentiment(top_matches)
 

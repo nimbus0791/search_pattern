@@ -4,4 +4,6 @@ numpy
 matplotlib
 mplfinance
 upstox-python-sdk
+
 dtaidistance
+scipy

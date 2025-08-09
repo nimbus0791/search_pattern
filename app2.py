@@ -452,7 +452,7 @@ curr_candle_input = st.slider("Number of current day candles to match", min_valu
 
 # Matching method selection
 matching_method = st.selectbox("Matching Method:", 
-                             ["DTW", "COSINE"],
+                             ["DTW", "LCS"],
                              index=0)
 
 if st.button("Fetch & Analyze"):
@@ -500,3 +500,4 @@ if st.button("Fetch & Analyze"):
                 st.pyplot(plot_candle_chart(combined_test_df_c, f"Test Day: {test_date_str}"))
             with cols[2]:
                 st.pyplot(plot_candle_chart(hist_df, title))
+

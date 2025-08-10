@@ -491,13 +491,13 @@ if st.button("Fetch & Analyze"):
             fut_sequence += remaining_feat
             cleaned = filter_noise(fut_sequence, min_len=3)
 
-            title = f"{match_date} | sim: {sim:.2f}"
             cols = st.columns(3)
             with cols[0]:
-                combined_test_df_with_pred = generate_predicted_candles_df_grouped(combined_test_df, cleaned)
-                st.pyplot(plot_candle_chart(combined_test_df_with_pred, f"Test Day: {test_date_str}"))
+                st.pyplot(plot_candle_chart(combined_test_df, f"Test Day | {test_date_str}"))
+                # combined_test_df_with_pred = generate_predicted_candles_df_grouped(combined_test_df, cleaned)
+                # st.pyplot(plot_candle_chart(combined_test_df_with_pred, f"Test Day: {test_date_str}"))
             with cols[1]:
-                st.pyplot(plot_candle_chart(combined_test_df_c, f"Test Day: {test_date_str}"))
+                st.pyplot(plot_candle_chart(hist_df.iloc[:25 + curr_n_candles], f"Matched Day | {match_date}"))
+                # st.pyplot(plot_candle_chart(combined_test_df_c, f"Test Day: {test_date_str}"))
             with cols[2]:
-                st.pyplot(plot_candle_chart(hist_df, title))
-
+                st.pyplot(plot_candle_chart(hist_df, f"Predicted Day | {match_date} | sim: {sim:.2f}"))

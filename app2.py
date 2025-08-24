@@ -386,8 +386,8 @@ history_df = load_data(DB_PATH)
 test_date = st.date_input("Select test date", datetime.now().date())
 top_k = st.slider("Number of top matches to show", 4, 32, 20, step=1)
 
-prev_n_candles = st.slider("Previous-day candles to match", 1, 25, DEFAULT_PREV_N_CANDLES, 1)
-curr_candle_input = st.slider("Current-day candles to match", 1, 25, DEFAULT_CURR_N_CANDLES, 1)
+prev_n_candles = st.number_input("Previous-day candles to match", 1, 25, DEFAULT_PREV_N_CANDLES, 1)
+curr_candle_input = st.number_input("Current-day candles to match", 1, 25, DEFAULT_CURR_N_CANDLES, 1)
 
 # Matching method + recency controls
 matching_method = st.selectbox(
@@ -397,7 +397,7 @@ matching_method = st.selectbox(
 )
 
 # Always show recent_k (used by DTW new; ignored by others)
-recent_k = st.slider("How many last candles must align (recent_k)", 1, 8, 3, 1)
+recent_k = st.number_input("How many last candles must align (recent_k)", 1, 8, 3, 1)
 
 with st.expander("Advanced (DTW new only)"):
     lambda_recent = st.slider("Blend weight for recent agreement (λ)", 0.0, 1.0, 0.35, 0.05)

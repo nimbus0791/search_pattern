@@ -15,7 +15,7 @@ import upstox_client
 INSTRUMENT_KEY = 'NSE_INDEX|Nifty Bank'
 DB_PATH = "banknifty-15min.csv"
 DEFAULT_PREV_N_CANDLES = 25
-DEFAULT_CURR_N_CANDLES = 4
+DEFAULT_CURR_N_CANDLES = 3
 
 # =========================
 # Data Fetching & Resampling
@@ -278,10 +278,10 @@ def match_pattern(history_df: pd.DataFrame,
             hist_feats = extract_candle_features(hist_df)
             sim, fut_sequence = lcs_similarity(hist_feats, test_feats)
 
-        elif method == "DTW (old)":
+        elif method == "DTW (Vanilla)":
             sim, fut_sequence = dtw_matching_old(test_df, hist_df)
 
-        else:  # "DTW (new)"
+        else:  # "DTW (Advance)"
             # quick reject for last-k disagreement to speed up
             if _last_k_direction_agreement(test_df, hist_df, k=min(recent_k, len(test_df))) < min_agree:
                 continue

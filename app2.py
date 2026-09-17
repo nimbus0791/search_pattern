@@ -146,12 +146,12 @@ def _build_candle_features(df: pd.DataFrame) -> np.ndarray:
     """Multivariate features for the new DTW."""
     X = df[['open','high','low','close']].astype(float).copy()
     body = (X['close'] - X['open']).to_numpy()
-    rng  = (X['high'] - X['low']).to_numpy()
-    rng[rng == 0] = 1e-9
+    rng_raw = (X['high'] - X['low']).to_numpy()
+    rng = np.where(rng_raw == 0, 1e-9, rng_raw)
 
     direction = np.sign(body)
-    open_arr = X['open'].to_numpy()
-    open_arr[open_arr == 0] = 1e-9
+    open_raw = X['open'].to_numpy()
+    open_arr = np.where(open_raw == 0, 1e-9, open_raw)
 
     body_pct   = body / open_arr
     upper_wick = (X['high'].to_numpy() - np.maximum(X['open'].to_numpy(), X['close'].to_numpy())) / rng

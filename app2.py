@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import mplfinance as mpf
 
-from dtaidistance import dtw as _dtw
+from dtaidistance import dtw_ndim
 from upstox_client.rest import ApiException
 import upstox_client
 
@@ -183,65 +183,22 @@ def _last_k_direction_agreement(test_df: pd.DataFrame, hist_df: pd.DataFrame, k:
     return float((t_dir == h_dir).sum() / float(k))
 
 # =========================
-# Matchers (3 methods)
+# Matcher: multivariate, recency-weighted DTW
 # =========================
-def lcs_similarity(seq1: str, seq2: str):
-    m, n = len(seq1), len(seq2)
-    if m == 0 or n == 0:
-        return 0.0, ""
-    dp = np.zeros((m+1, n+1), dtype=int)
-    for i in range(m):
-        s1 = seq1[i]
-        row = dp[i]
-        nxt = dp[i+1]
-        for j in range(n):
-            nxt[j+1] = row[j] + 1 if s1 == seq2[j] else max(nxt[j], row[j+1])
-    similarity = dp[m][n] / max(m, n)
-
-    # backtrack to get last match index in seq2
-    i, j = m, n
-    lcs_indices_seq2 = []
-    while i > 0 and j > 0:
-        if seq1[i-1] == seq2[j-1]:
-            lcs_indices_seq2.append(j-1)
-            i -= 1; j -= 1
-        elif dp[i-1][j] >= dp[i][j-1]:
-            i -= 1
-        else:
-            j -= 1
-    last_match_index = max(lcs_indices_seq2) if lcs_indices_seq2 else -1
-    return float(similarity), (seq1[last_match_index:] if last_match_index >= 0 else "")
-
-def dtw_matching_old(test_df: pd.DataFrame, hist_df: pd.DataFrame):
-    # z-score close-only
-    t = test_df['close'].astype(float).to_numpy()
-    h = hist_df['close'].astype(float).to_numpy()
-    t = (t - t.mean()) / (t.std() + 1e-9)
-    h = (h - h.mean()) / (h.std() + 1e-9)
-    dist = _dtw.distance(t, h)
-    sim = 1.0 / (1.0 + dist)
-    return float(sim), ""
-
-def dtw_matching_new(test_df: pd.DataFrame, hist_df: pd.DataFrame, recent_k: int = 3, lambda_recent: float = 0.35):
+def dtw_similarity(test_df: pd.DataFrame, hist_df: pd.DataFrame, recent_k: int = 3, lambda_recent: float = 0.35):
     T = _build_candle_features(test_df)
     H = _build_candle_features(hist_df)
     T = _apply_recency_weights(T)
     H = _apply_recency_weights(H)
-    T_flat, H_flat = T.reshape(-1), H.reshape(-1)
-    window = max(2, int(0.2 * len(test_df) * T.shape[1]))
-    dist = _dtw.distance(T_flat, H_flat, window=window)
-    sim_dtw = 1.0 / (1.0 + np.exp(dist))     # logistic on -dist
+    # Multivariate DTW over the (n_candles, n_features) arrays directly - do NOT
+    # flatten to 1D, that lets DTW warp-align individual features against each
+    # other across candles instead of comparing whole per-candle feature vectors.
+    window = max(2, int(0.2 * len(test_df)))
+    dist = dtw_ndim.distance(np.ascontiguousarray(T), np.ascontiguousarray(H), window=window)
+    sim_dtw = 1.0 / (1.0 + dist)  # (0, 1], same scale as agree below
     agree = _last_k_direction_agreement(test_df, hist_df, k=recent_k)
     sim = (1.0 - lambda_recent) * sim_dtw + lambda_recent * agree
     return float(sim), ""
-
-def _dtw_vanilla_score(test_df: pd.DataFrame, hist_df: pd.DataFrame) -> float:
-    t = test_df['close'].astype(float).to_numpy()
-    h = hist_df['close'].astype(float).to_numpy()
-    t = (t - t.mean()) / (t.std() + 1e-9)
-    h = (h - h.mean()) / (h.std() + 1e-9)
-    dist = _dtw.distance(t, h)
-    return float(1.0 / (1.0 + dist))  # higher is better (visual)
 
 # =========================
 # Pattern Match Runner
@@ -253,16 +210,13 @@ def match_pattern(history_df: pd.DataFrame,
                   top_k: int,
                   prev_n_candles: int,
                   curr_n_candles: int,
-                  method: str = "DTW (Advance)",
                   recent_k: int = 3,
                   min_agree: float = 0.67,
-                  lambda_recent: float = 0.35,
-                  shortlist_n: int = 120,          # for Hybrid: Vanilla → Advance
-                  blend_alpha: float = 0.25):      # optional blend of vanilla into final score
+                  lambda_recent: float = 0.35):
     """
-    Hybrid modes:
-      - "Hybrid: Vanilla → Advance": rank by vanilla DTW, shortlist top-N, filter by last-k agreement, rerank by DTW-Advance
-      - "Hybrid: Agree → Vanilla":   filter by last-k agreement first, then rank by vanilla DTW
+    DTW (Advance): pre-filter candidates by last-k up/down direction
+    agreement, then rank the survivors by multivariate, recency-weighted DTW
+    similarity blended with that same agreement score.
     """
     df2 = history_df.copy()
     df2['time'] = pd.to_datetime(df2['time'], utc=True).dt.tz_convert(None)
@@ -276,7 +230,7 @@ def match_pattern(history_df: pd.DataFrame,
     test_df = pd.concat([prev_test.iloc[-prev_n_candles:], curr_test.iloc[:curr_n_candles]], ignore_index=True)
 
     # -------- collect all candidates once --------
-    candidates = []  # (date, hist_df_slice, hist_df_full)
+    candidates = []  # (date, hist_df_slice, hist_df_full, prev_day_len)
     for i in range(1, len(dates)):
         d = dates[i]
         if d >= test_date:
@@ -286,77 +240,19 @@ def match_pattern(history_df: pd.DataFrame,
             continue
         hist_df_full = pd.concat([prev, curr], ignore_index=True)
         hist_df_slice = pd.concat([prev.iloc[-prev_n_candles:], curr.iloc[:curr_n_candles]], ignore_index=True)
-        candidates.append((d, hist_df_slice, hist_df_full))
+        candidates.append((d, hist_df_slice, hist_df_full, len(prev)))
 
     if not candidates:
         return []
 
-    # ===== Method branches =====
     results = []
+    for (d, hslice, hfull, prev_len) in candidates:
+        # quick reject by last-k agreement to keep continuity with the test pattern
+        if _last_k_direction_agreement(test_df, hslice, k=min(recent_k, len(test_df))) < min_agree:
+            continue
+        sim_adv, fut_seq = dtw_similarity(test_df, hslice, recent_k=recent_k, lambda_recent=lambda_recent)
+        results.append((d, sim_adv, fut_seq, hfull, prev_len))
 
-    if method == "DTW (Vanilla)":
-        for (d, hslice, hfull) in candidates:
-            sim_v = _dtw_vanilla_score(test_df, hslice)
-            results.append((d, sim_v, "", hfull))
-        return sorted(results, key=lambda x: -x[1])[:top_k]
-
-    if method == "DTW (Advance)":
-        for (d, hslice, hfull) in candidates:
-            # quick reject by last-k agreement to keep “visual-ish” continuity
-            if _last_k_direction_agreement(test_df, hslice, k=min(recent_k, len(test_df))) < min_agree:
-                continue
-            sim_adv, fut_seq = dtw_matching_new(test_df, hslice, recent_k=recent_k, lambda_recent=lambda_recent)
-            results.append((d, sim_adv, fut_seq, hfull))
-        return sorted(results, key=lambda x: -x[1])[:top_k]
-
-    if method == "Hybrid: Vanilla → Advance":
-        # Stage 1: rank by vanilla (visual)
-        stage1 = []
-        for (d, hslice, hfull) in candidates:
-            sim_v = _dtw_vanilla_score(test_df, hslice)
-            stage1.append((d, sim_v, hslice, hfull))
-        stage1.sort(key=lambda x: -x[1])
-        stage1 = stage1[:max(top_k, shortlist_n)]  # generous shortlist
-
-        # Stage 2: keep only last-k agreement and rerank by Advance
-        stage2 = []
-        for (d, sim_v, hslice, hfull) in stage1:
-            if _last_k_direction_agreement(test_df, hslice, k=min(recent_k, len(test_df))) < min_agree:
-                continue
-            sim_adv, fut_seq = dtw_matching_new(test_df, hslice, recent_k=recent_k, lambda_recent=lambda_recent)
-            # Optional blending so we never lose the "visual" feel entirely
-            final_score = (1.0 - blend_alpha) * sim_adv + blend_alpha * sim_v
-            stage2.append((d, final_score, fut_seq, hfull))
-
-        return sorted(stage2, key=lambda x: -x[1])[:top_k]
-
-    if method == "Hybrid: Agree → Vanilla":
-        # Stage 1: only keep those that agree on last-k
-        agreed = []
-        for (d, hslice, hfull) in candidates:
-            if _last_k_direction_agreement(test_df, hslice, k=min(recent_k, len(test_df))) >= min_agree:
-                agreed.append((d, hslice, hfull))
-
-        # Stage 2: rank these by vanilla DTW (visual)
-        for (d, hslice, hfull) in agreed:
-            sim_v = _dtw_vanilla_score(test_df, hslice)
-            results.append((d, sim_v, "", hfull))
-
-        return sorted(results, key=lambda x: -x[1])[:top_k]
-
-    # Fallback to your original three branches
-    if method == "LCS":
-        for (d, hslice, hfull) in candidates:
-            test_feats = extract_candle_features(test_df)
-            hist_feats = extract_candle_features(hslice)
-            sim, fut_seq = lcs_similarity(hist_feats, test_feats)
-            results.append((d, sim, fut_seq, hfull))
-        return sorted(results, key=lambda x: -x[1])[:top_k]
-
-    # Default to DTW (Vanilla) if unknown
-    for (d, hslice, hfull) in candidates:
-        sim_v = _dtw_vanilla_score(test_df, hslice)
-        results.append((d, sim_v, "", hfull))
     return sorted(results, key=lambda x: -x[1])[:top_k]
 
 
@@ -411,8 +307,8 @@ def plot_candle_chart(df: pd.DataFrame, title: str):
 def analyze_market_sentiment(top_matches, curr_n_candles: int):
     up_count = down_count = 0
     n_seq = 5
-    for (match_date, sim, fut_sequence, hist_df) in top_matches:
-        remaining_df = hist_df.iloc[24 + curr_n_candles:].reset_index(drop=True)
+    for (match_date, sim, fut_sequence, hist_df, prev_len) in top_matches:
+        remaining_df = hist_df.iloc[prev_len + curr_n_candles:].reset_index(drop=True)
         remaining_feat = extract_candle_features(remaining_df)
         cleaned = filter_noise(fut_sequence + remaining_feat, min_len=2)
         u_cnt = sum(1 for ch in cleaned[:n_seq] if ch == 'u')
@@ -436,9 +332,9 @@ def load_data(path: str) -> pd.DataFrame:
 @st.cache_data
 def get_cached_top_matches(history_df, prev_df, curr_df, test_date_str,
                            top_k, prev_n_candles, curr_n_candles,
-                           method, recent_k, min_agree, lambda_recent):
+                           recent_k, min_agree, lambda_recent):
     return match_pattern(history_df, prev_df, curr_df, test_date_str, top_k,
-                         prev_n_candles, curr_n_candles, method, recent_k, min_agree, lambda_recent)
+                         prev_n_candles, curr_n_candles, recent_k, min_agree, lambda_recent)
 
 @st.cache_data
 def get_cached_sentiment(top_matches, curr_n_candles):
@@ -448,7 +344,7 @@ def get_cached_sentiment(top_matches, curr_n_candles):
 # UI
 # =========================
 st.set_page_config(layout="wide")
-st.title("Top-K Pattern Matching Grid")
+st.title("Top-K DTW Pattern Matching Grid")
 
 history_df = load_data(DB_PATH)
 
@@ -458,19 +354,9 @@ top_k = st.slider("Number of top matches to show", 4, 32, 20, step=1)
 prev_n_candles = st.number_input("Previous-day candles to match", 1, 25, DEFAULT_PREV_N_CANDLES, 1)
 curr_candle_input = st.number_input("Current-day candles to match", 1, 25, DEFAULT_CURR_N_CANDLES, 1)
 
-# Matching method + recency controls
-matching_method = st.selectbox(
-    "Matching Method:",
-    ["DTW (Advance)", "DTW (Vanilla)", "LCS",
-     "Hybrid: Vanilla → Advance", "Hybrid: Agree → Vanilla"],
-    index=0
-)
-
-
-# Always show recent_k (used by DTW new; ignored by others)
 recent_k = st.number_input("How many last candles must align (recent_k)", 1, 8, 3, 1)
 
-with st.expander("Advanced (DTW new only)"):
+with st.expander("Advanced"):
     lambda_recent = st.slider("Blend weight for recent agreement (λ)", 0.0, 1.0, 0.35, 0.05)
     min_agree = st.slider("Quick pre-filter: minimum agreement on last-k", 0.0, 1.0, 0.67, 0.01)
 
@@ -504,7 +390,7 @@ if fetch_clicked:
             top_matches = get_cached_top_matches(
                 history_df, prev_day_df, curr_day_df, test_date_str,
                 top_k, prev_n_candles, curr_n_candles,
-                matching_method, recent_k, min_agree, lambda_recent
+                recent_k, min_agree, lambda_recent
             )
 
         sentiment, prob = get_cached_sentiment(top_matches, curr_n_candles)
@@ -519,9 +405,9 @@ if fetch_clicked:
         st.pyplot(plot_candle_chart(combined_test_df, f"Test Day: {test_date_str} | {sentiment}: {prob:.1f}%"))
 
         st.subheader(f"Top {top_k} Matches (Predicted | Test | Match)")
-        for i, (match_date, sim, fut_sequence, hist_df) in enumerate(top_matches, 1):
+        for i, (match_date, sim, fut_sequence, hist_df, prev_len) in enumerate(top_matches, 1):
             st.markdown(f"---\n### {i}. Match Date: `{match_date}` — Similarity: `{sim:.2f}`")
-            remaining_df = hist_df.iloc[24 + curr_n_candles:].reset_index(drop=True)
+            remaining_df = hist_df.iloc[prev_len + curr_n_candles:].reset_index(drop=True)
             remaining_feat = extract_candle_features(remaining_df)
             cleaned = filter_noise((fut_sequence or "") + remaining_feat, min_len=3)
 
@@ -529,6 +415,6 @@ if fetch_clicked:
             with cols[0]:
                 st.pyplot(plot_candle_chart(combined_test_df, f"Test Day | {test_date_str}"))
             with cols[1]:
-                st.pyplot(plot_candle_chart(hist_df.iloc[:25 + curr_n_candles], f"Matched Day | {match_date}"))
+                st.pyplot(plot_candle_chart(hist_df.iloc[:prev_len + curr_n_candles], f"Matched Day | {match_date}"))
             with cols[2]:
                 st.pyplot(plot_candle_chart(hist_df, f"Predicted Day | {match_date} | sim: {sim:.2f}"))
